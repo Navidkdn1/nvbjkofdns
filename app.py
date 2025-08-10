@@ -18,7 +18,6 @@ BINANCE_API_BACKUPS = [
     "https://api2.binance.com",
     "https://api3.binance.com",
 ]
-INTERVAL = "5m"
 RSI_PERIOD = 13
 DEFAULT_REFRESH_SEC = 60
 LOW_TH = 25.0
@@ -32,19 +31,20 @@ st.set_page_config(
 )
 
 st.title("📈 Live RSI (5m) — Top 30 by Market Cap")
-st.caption("منبع مارکت‌کپ: CoinGecko | کندل ۵دقیقه: Binance (در صورت خطا، CoinGecko OHLC)")
+st.caption("CoinGecko برای لیست مارکت‌کپ | کندل ۵دقیقه: Binance (درصورت خطا، CoinGecko OHLC)")
 
 # --------- Sidebar ---------
 with st.sidebar:
     st.header("تنظیمات")
     refresh_sec = st.slider("بازهٔ رفرش (ثانیه)", min_value=30, max_value=180, value=DEFAULT_REFRESH_SEC, step=10)
-    st.caption("⏱️ برای رعایت محدودیت‌های API بهتر است کمتر از 30 ثانیه نباشد.")
+    st.caption("⏱️ کمتر از 30s پیشنهاد نمی‌شود.")
     st.divider()
     st.subheader("آستانه‌های هشدار (RSI)")
     low_th = st.number_input("پایین", min_value=1.0, max_value=49.0, value=LOW_TH, step=0.5)
     high_th = st.number_input("بالا", min_value=51.0, max_value=99.0, value=HIGH_TH, step=0.5)
     st.divider()
     provider = st.selectbox("منبع کندل ۵دقیقه", ["Binance (پیش‌فرض)", "CoinGecko (جایگزین)"])
+    compact = st.toggle("فقط خروجی عددی (کامپکت)", value=False)
 
 # Auto-refresh via query param tick
 try:
@@ -55,37 +55,28 @@ except Exception:
 # --------- HTTP sessions with Retry ---------
 def make_session() -> requests.Session:
     s = requests.Session()
-    retries = Retry(
-        total=5,
-        backoff_factor=1.2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods={"GET", "POST"},
-    )
+    retries = Retry(total=5, backoff_factor=1.2, status_forcelist=[429,500,502,503,504], allowed_methods={"GET","POST"})
     adapter = HTTPAdapter(max_retries=retries, pool_connections=50, pool_maxsize=50)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
-    s.headers.update({
-        "User-Agent": "Top30-RSI-Live/1.1",
-        "Accept": "application/json",
-    })
+    s.headers.update({"User-Agent":"Top30-RSI-Live/1.2","Accept":"application/json"})
     return s
 
 SESSION = make_session()
 
-# --------- Helpers (CoinGecko) ---------
+# --------- Helpers (CG) ---------
 @st.cache_data(show_spinner=False, ttl=1800)
 def cg_get_top_coins(n: int) -> List[Dict]:
     url = f"{COINGECKO_API}/coins/markets"
-    params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": n, "page": 1, "sparkline": "false"}
+    params = {"vs_currency":"usd","order":"market_cap_desc","per_page":n,"page":1,"sparkline":"false"}
     r = SESSION.get(url, params=params, timeout=30)
     r.raise_for_status()
     return r.json()
 
 @st.cache_data(show_spinner=False, ttl=300)
 def cg_fetch_ohlc(coin_id: str, days: int = 1) -> List[List[float]]:
-    # days=1 ~ 5m candles on CG OHLC
     url = f"{COINGECKO_API}/coins/{coin_id}/ohlc"
-    params = {"vs_currency": "usd", "days": days}
+    params = {"vs_currency":"usd","days":days}
     r = SESSION.get(url, params=params, timeout=30)
     if r.status_code == 429:
         time.sleep(3)
@@ -107,7 +98,7 @@ def binance_spot_usdt_set(base_url: str) -> set:
 
 @st.cache_data(show_spinner=False, ttl=120)
 def binance_fetch_klines(symbol: str, base_url: str, interval: str = "5m", limit: int = 200) -> List[List]:
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    params = {"symbol":symbol,"interval":interval,"limit":limit}
     r = SESSION.get(f"{base_url}/api/v3/klines", params=params, timeout=30)
     if r.status_code == 429:
         time.sleep(2)
@@ -120,8 +111,7 @@ def map_to_binance_symbol(symbol_text: str, usdt_set: set) -> Optional[str]:
     cand = f"{symbol_text.upper()}USDT"
     if cand in usdt_set:
         return cand
-    aliases = {"TONCOIN": "TON", "WBTC": "WBTC", "STETH": "STETH", "BCH": "BCH", "PEPE": "PEPE",
-               "SHIB": "SHIB", "DOGE": "DOGE", "TRX": "TRX", "ADA": "ADA", "XRP": "XRP", "SOL": "SOL"}
+    aliases = {"TONCOIN":"TON","WBTC":"WBTC","STETH":"STETH","BCH":"BCH","PEPE":"PEPE","SHIB":"SHIB","DOGE":"DOGE","TRX":"TRX","ADA":"ADA","XRP":"XRP","SOL":"SOL"}
     up = symbol_text.upper()
     alt = aliases.get(up, up)
     cand2 = f"{alt}USDT"
@@ -163,12 +153,11 @@ with st.spinner("دریافت ۳۰ کوین اول مارکت‌کپ از CoinGe
 rows: List[Dict] = []
 alerts: List[Tuple] = []
 
-# Try Binance if selected; otherwise go CG directly
+# Try Binance, else fallback to CG
 use_binance = provider.startswith("Binance")
 base_url = None
 
 if use_binance:
-    # probe mirrors
     for cand in BINANCE_API_BACKUPS:
         try:
             _ = binance_spot_usdt_set(cand)
@@ -189,7 +178,7 @@ if use_binance:
 
 with st.spinner("دریافت کندل‌های ۵ دقیقه‌ای و محاسبه RSI..."):
     if use_binance:
-        mapped: List[Tuple[str, str, str]] = []  # (name, cg_symbol, binance_symbol)
+        mapped: List[Tuple[str, str, str]] = []
         for coin in top_list:
             name = coin.get("name", "")
             cg_symbol = coin.get("symbol", "")
@@ -212,13 +201,13 @@ with st.spinner("دریافت کندل‌های ۵ دقیقه‌ای و محاس
                     rsi = None
                 rows.append({
                     "Name": name,
-                    "Symbol": cg_sym,
-                    "Pair/ID": binance_sym,
-                    "Price (USDT)": round(last_price, 6) if last_price is not None else None,
-                    "RSI(13,5m)": round(rsi, 2) if rsi is not None else None,
+                    "Symbol": cg_sym.upper(),
+                    "Source": binance_sym,
+                    "Price": round(last_price, 6) if last_price is not None else None,
+                    "RSI": round(rsi, 2) if rsi is not None else None,
                 })
                 if rsi is not None and (rsi <= low_th or rsi >= high_th):
-                    alerts.append((name, cg_sym, binance_sym, rsi, last_price))
+                    alerts.append((name, cg_sym.upper(), binance_sym, rsi, last_price))
                 time.sleep(0.12)
 
     if not use_binance:
@@ -237,9 +226,9 @@ with st.spinner("دریافت کندل‌های ۵ دقیقه‌ای و محاس
             rows.append({
                 "Name": name,
                 "Symbol": cg_symbol,
-                "Pair/ID": coin_id,
-                "Price (USD)": round(last_price, 6) if last_price is not None else None,
-                "RSI(13,5m)": round(rsi, 2) if rsi is not None else None,
+                "Source": coin_id,
+                "Price": round(last_price, 6) if last_price is not None else None,
+                "RSI": round(rsi, 2) if rsi is not None else None,
             })
             if rsi is not None and (rsi <= low_th or rsi >= high_th):
                 alerts.append((name, cg_symbol, coin_id, rsi, last_price))
@@ -247,44 +236,58 @@ with st.spinner("دریافت کندل‌های ۵ دقیقه‌ای و محاس
 
 df = pd.DataFrame(rows)
 
-# --------- Live Ticker ---------
-st.subheader("🔴 Live RSI Ticker — Top 30")
-now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-st.caption(f"آخرین به‌روزرسانی: {now} | رفرش خودکار هر {refresh_sec} ثانیه | منبع: {'Binance' if use_binance else 'CoinGecko'}")
+# ---------------- NUMERIC OUTPUT (Compact) ----------------
+st.subheader("🔢 خروجی عددی سریع")
+num_df = df[["Symbol","RSI","Price"]].copy() if not df.empty else pd.DataFrame(columns=["Symbol","RSI","Price"])
+num_df = num_df.sort_values(by=["RSI"], ascending=True, na_position="last")
+st.dataframe(num_df, use_container_width=True, height=360)
+# خطوط ساده فقط عددی
+lines = [f"{r['Symbol']}: RSI {r['RSI'] if pd.notna(r['RSI']) else '—'} | Price {r['Price'] if pd.notna(r['Price']) else '—'}" for _, r in num_df.iterrows()]
+st.text("
+".join(lines[:60]))
 
-def fmt(x):
-    if pd.isna(x):
-        return "—"
-    try:
-        return f"{float(x):.1f}"
-    except Exception:
-        return str(x)
+# دکمه دانلود CSV
+st.download_button("دانلود CSV عددی", data=num_df.to_csv(index=False).encode("utf-8"), file_name="rsi_top30_numeric.csv", mime="text/csv")
 
-if not df.empty:
-    ticker_pairs = [f"{r['Symbol']}:{fmt(r['RSI(13,5m)'])}" for _, r in df.iterrows()]
-    per_line = 12
-    for i in range(0, len(ticker_pairs), per_line):
-        st.code("  |  ".join(ticker_pairs[i:i+per_line]))
-else:
-    st.info("داده‌ای برای نمایش موجود نیست.")
+if not compact:
+    # --------- Live Ticker ---------
+    st.subheader("🔴 Live RSI Ticker — Top 30")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    st.caption(f"آخرین به‌روزرسانی: {now} | رفرش خودکار هر {refresh_sec} ثانیه | منبع: {'Binance' if use_binance else 'CoinGecko'}")
 
-st.divider()
+    def fmt(x):
+        if pd.isna(x):
+            return "—"
+        try:
+            return f"{float(x):.1f}"
+        except Exception:
+            return str(x)
 
-# --------- Alerts Board ---------
-st.subheader("📣 RSI Alerts (≤ پایین / ≥ بالا)")
-if alerts:
-    cols = st.columns(4)
-    for idx, (name, sym, pair, rsi, price) in enumerate(sorted(alerts, key=lambda x: x[3])):
-        with cols[idx % 4]:
-            st.metric(label=f"{name} ({sym})", value=f"{rsi:.2f}", delta=f"{price:.6g}" if price is not None else None)
-else:
-    st.caption("فعلاً هیچ کوینی در محدودهٔ هشدار نیست.")
+    if not df.empty:
+        ticker_pairs = [f"{r['Symbol']}:{fmt(r['RSI'])}" for _, r in df.iterrows()]
+        per_line = 12
+        for i in range(0, len(ticker_pairs), per_line):
+            st.code("  |  ".join(ticker_pairs[i:i+per_line]))
+    else:
+        st.info("داده‌ای برای نمایش موجود نیست.")
 
-st.divider()
+    st.divider()
 
-# --------- Full Table ---------
-st.subheader("جدول کامل (Top 30)")
-df_show = df.sort_values(by=["RSI(13,5m)"], ascending=True, na_position="last")
-st.dataframe(df_show, use_container_width=True, height=520)
+    # --------- Alerts Board ---------
+    st.subheader("📣 RSI Alerts (≤ پایین / ≥ بالا)")
+    if alerts:
+        cols = st.columns(4)
+        for idx, (name, sym, src, rsi, price) in enumerate(sorted(alerts, key=lambda x: x[3])):
+            with cols[idx % 4]:
+                st.metric(label=f"{name} ({sym})", value=f"{rsi:.2f}", delta=f"{price:.6g}" if price is not None else None)
+    else:
+        st.caption("فعلاً هیچ کوینی در محدودهٔ هشدار نیست.")
 
-st.caption("⚠️ اگر Binance خطا داد، از سایدبار منبع را روی CoinGecko بگذارید یا صبر کنید تا محدودیت رفع شود.")
+    st.divider()
+
+    # --------- Full Table ---------
+    st.subheader("جدول کامل (Top 30)")
+    df_show = df.sort_values(by=["RSI"], ascending=True, na_position="last")
+    st.dataframe(df_show, use_container_width=True, height=520)
+
+st.caption("⚠️ اگر Binance خطا داد، از سایدبار منبع را روی CoinGecko بگذارید یا کمی بعد دوباره تلاش کنید.")
